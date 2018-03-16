@@ -5,9 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
-	"log"
 	"math/big"
 	"net/http"
+
+	"github.com/pschlump/godebug"
 )
 
 // EthError - ethereum error
@@ -36,13 +37,18 @@ type ethRequest struct {
 
 // EthRPC - Ethereum rpc client
 type EthRPC struct {
-	url   string
-	Debug bool
+	url     string
+	Db01    bool // Echo messages being sent
+	Db02    bool // Echo responces received back
+	LogWith func(s string)
 }
 
 // NewEthRPC create new rpc client with given url
 func NewEthRPC(url string) *EthRPC {
-	return &EthRPC{url: url}
+	return &EthRPC{
+		url:     url,
+		LogWith: func(s string) {},
+	}
 }
 
 func (rpc *EthRPC) call(method string, target interface{}, params ...interface{}) error {
@@ -56,49 +62,67 @@ func (rpc *EthRPC) call(method string, target interface{}, params ...interface{}
 	}
 
 	if err := json.Unmarshal(result, target); err != nil {
+		fmt.Printf("result ->%s<- AT: %s\n", result, godebug.LF())
 		return err
 	}
 
 	return nil
 }
 
+var gID = 1
+
 // Call returns raw response of method call
 func (rpc *EthRPC) Call(method string, params ...interface{}) (json.RawMessage, error) {
 	request := ethRequest{
-		ID:      1,
+		ID:      gID,
 		JSONRPC: "2.0",
 		Method:  method,
 		Params:  params,
 	}
 
+	gID++
+
 	body, err := json.Marshal(request)
 	if err != nil {
+		fmt.Printf("AT: %s err=%s\n", godebug.LF(), err)
 		return nil, err
 	}
+
+	// TODO: xyzzy - Add a DeltaT timing info to this
+
+	if rpc.Db01 {
+		fmt.Printf("\nCall To: ->%s<- Body: ->%s<- AT:%s\n", method, body, godebug.LF())
+	}
+	rpc.LogWith(fmt.Sprintf("Call To: %s body: %s AT:%s", method, body, godebug.LF()))
 
 	response, err := http.Post(rpc.url, "application/json", bytes.NewBuffer(body))
 	if response != nil {
 		defer response.Body.Close()
 	}
 	if err != nil {
+		fmt.Printf("AT: %s err=%s\n", godebug.LF(), err)
 		return nil, err
 	}
 
 	data, err := ioutil.ReadAll(response.Body)
 	if err != nil {
+		fmt.Printf("AT: %s err=%s\n", godebug.LF(), err)
 		return nil, err
 	}
 
-	if rpc.Debug {
-		log.Printf("%s\nRequest: %s\nResponse: %s\n", method, body, data)
+	if rpc.Db02 {
+		fmt.Printf("Response: ->%s<-\n\n", data)
 	}
+	rpc.LogWith(fmt.Sprintf("Response: %s", data))
 
 	resp := new(ethResponse)
 	if err := json.Unmarshal(data, resp); err != nil {
+		fmt.Printf("data ->%s<- AT: %s\n", data, godebug.LF())
 		return nil, err
 	}
 
 	if resp.Error != nil {
+		fmt.Printf("resp=%s AT: %s\n", godebug.SVar(resp), godebug.LF())
 		return nil, *resp.Error
 	}
 
@@ -471,8 +495,21 @@ func (rpc *EthRPC) EthGetFilterLogs(filterID string) ([]Log, error) {
 }
 
 // EthGetLogs returns an array of all logs matching a given filter object.
-func (rpc *EthRPC) EthGetLogs(params FilterParams) ([]Log, error) {
-	var logs = []Log{}
-	err := rpc.call("eth_getLogs", &logs, params)
-	return logs, err
+func (rpc *EthRPC) EthGetLogs(params FilterParams) (logs []Log, err error) {
+	err = rpc.call("eth_getLogs", &logs, params)
+	return
+}
+
+// PJS Added ----------------------------------------------------------------------------------------------------------------------------
+
+// curl http://localhost:8545 -H 'Content-Type: application/json;charset=UTF-8' -H 'Accept: application/json, text/plain, /' -H 'Cache-Control: no-cache' -X POST --data '{"jsonrpc":"2.0","method":"personal_unlockAccount","params":["0xaddress", "password", 15],"id":67}'
+
+// EthSendTransaction creates new message call transaction or a contract creation, if the data field contains code.
+func (rpc *EthRPC) PersonalUnlockAccount(acct, password string, duration int) (err error) {
+	var result bool
+	err = rpc.call("personal_unlockAccount", &result, acct, password, duration)
+	if err == nil && !result {
+		err = fmt.Errorf("Failed to unlock account")
+	}
+	return err
 }
